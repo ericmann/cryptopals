@@ -1,4 +1,4 @@
-package main
+package set1
 
 import (
 	"bufio"
@@ -253,7 +253,8 @@ func task8(filePath string) string {
 	return ""
 }
 
-func main() {
+// Go runs all sets in the challenge
+func Go() {
 	// Challenge 1
 	println("1: ", task1("49276d206b696c6c696e6720796f757220627261696e206c696b65206120706f69736f6e6f7573206d757368726f6f6d"))
 
