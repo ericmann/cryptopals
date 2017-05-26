@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"math/rand"
 	"os"
+	"strconv"
 )
 
 func check(err error) {
@@ -51,7 +53,7 @@ func cbcEncrypt(iv []byte, key []byte, plaintext []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	check(err)
 
-	toPad := len(plaintext) % aes.BlockSize
+	toPad := 16 - (len(plaintext) % aes.BlockSize)
 	toEnc := pad(plaintext, len(plaintext)+toPad)
 
 	encrypted := make([]byte, len(toEnc))
@@ -76,6 +78,66 @@ func cbcDecrypt(iv []byte, key []byte, ciphertext []byte) ([]byte, error) {
 	mode.CryptBlocks(ciphertext, ciphertext)
 
 	return ciphertext, nil
+}
+
+func encryptionOracle(plaintext []byte) []byte {
+	// Create a random 16-byte key
+	key := make([]byte, 16)
+	rand.Read(key)
+
+	// Append and prepend 5-10 random bytes before and after
+	before := make([]byte, 5+rand.Intn(5))
+	rand.Read(before)
+	after := make([]byte, 5+rand.Intn(5))
+	rand.Read(after)
+	plaintext = append(before, plaintext...)
+	plaintext = append(plaintext, after...)
+
+	toPad := 16 - (len(plaintext) % aes.BlockSize)
+	plaintext = pad(plaintext, len(plaintext)+toPad)
+
+	// Set up aes
+	block, err := aes.NewCipher(key)
+	check(err)
+
+	// Choose the cipher
+	choice := rand.Intn(10)
+	if choice%2 == 0 {
+		ciphertext := make([]byte, aes.BlockSize+len(plaintext))
+		iv := ciphertext[:aes.BlockSize]
+		rand.Read(iv) // Use a random IV
+		mode := cipher.NewCBCEncrypter(block, iv)
+		mode.CryptBlocks(ciphertext[aes.BlockSize:], plaintext)
+
+		return ciphertext
+	}
+
+	ciphertext := make([]byte, len(plaintext))
+	for i := 0; i < len(plaintext); i += aes.BlockSize {
+		block.Encrypt(ciphertext[i:i+aes.BlockSize], plaintext[i:i+aes.BlockSize])
+	}
+
+	return ciphertext
+}
+
+func detectEcb(cipher []byte) bool {
+	size := len(cipher)
+
+	blocks := map[string]bool{}
+	for i := 0; i < size; i += 16 {
+		block := string(cipher[i : i+16])
+		_, exists := blocks[block]
+
+		// If we find a duplicate ciphertext, we've found a duplicate plaintext
+		if exists {
+			return true
+		}
+
+		// If no duplicate, save for later testing
+		blocks[block] = true
+	}
+
+	return false
 }
 
 /*************************/
@@ -114,6 +176,29 @@ func task2(filePath string, fileKey string, fileIv []byte) []byte {
 	return fileDecrypt
 }
 
+// ECB/CBC detection oracle
+func task3() string {
+	ecbCount := 0
+
+	for i := 0; i < 1000; i++ {
+		// Generate repeating-string plaintext
+		plain := make([]byte, 240)
+		for j := range plain {
+			plain[j] = byte('B')
+		}
+
+		// Encrypt it
+		cipher := encryptionOracle(plain)
+
+		// Detect ECB
+		if detectEcb(cipher) {
+			ecbCount++
+		}
+	}
+
+	return strconv.Itoa(ecbCount) + " / 1000"
+}
+
 // Go runs all sets in the challenge
 func Go() {
 	// Challenge 1
@@ -124,6 +209,7 @@ func Go() {
 	//println("2: ", task2("1c0111001f010100061a024b53535009181c", "686974207468652062756c6c277320657965"))
 
 	// Challenge 3
+	println("3: ECB vs CBC detections => ", task3())
 	//println("3: ", task3("1b37373331363f78151b7f2b783431333d78397828372d363c78373e783a393b3736"))
 
 	// Challenge 4
