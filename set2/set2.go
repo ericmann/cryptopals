@@ -80,6 +80,39 @@ func cbcDecrypt(iv []byte, key []byte, ciphertext []byte) ([]byte, error) {
 	return ciphertext, nil
 }
 
+func simpleCbcEncrypt(key []byte, plaintext []byte) []byte {
+	block, err := aes.NewCipher(key)
+	check(err)
+
+	toPad := aes.BlockSize - (len(plaintext) % aes.BlockSize)
+	plaintext = pad(plaintext, len(plaintext)+toPad)
+
+	ciphertext := make([]byte, aes.BlockSize+len(plaintext))
+	iv := ciphertext[:aes.BlockSize]
+	rand.Read(iv) // Use a random IV
+
+	mode := cipher.NewCBCEncrypter(block, iv)
+	mode.CryptBlocks(ciphertext[aes.BlockSize:], plaintext)
+
+	return ciphertext
+}
+
+func ecbEncrypt(key []byte, plaintext []byte) []byte {
+	toPad := aes.BlockSize - (len(plaintext) % aes.BlockSize)
+	plaintext = pad(plaintext, len(plaintext)+toPad)
+
+	// Set up aes
+	block, err := aes.NewCipher(key)
+	check(err)
+
+	ciphertext := make([]byte, len(plaintext))
+	for i := 0; i < len(plaintext); i += aes.BlockSize {
+		block.Encrypt(ciphertext[i:i+aes.BlockSize], plaintext[i:i+aes.BlockSize])
+	}
+
+	return ciphertext
+}
+
 func encryptionOracle(plaintext []byte) []byte {
 	// Create a random 16-byte key
 	key := make([]byte, 16)
@@ -93,31 +126,13 @@ func encryptionOracle(plaintext []byte) []byte {
 	plaintext = append(before, plaintext...)
 	plaintext = append(plaintext, after...)
 
-	toPad := 16 - (len(plaintext) % aes.BlockSize)
-	plaintext = pad(plaintext, len(plaintext)+toPad)
-
-	// Set up aes
-	block, err := aes.NewCipher(key)
-	check(err)
-
 	// Choose the cipher
 	choice := rand.Intn(10)
 	if choice%2 == 0 {
-		ciphertext := make([]byte, aes.BlockSize+len(plaintext))
-		iv := ciphertext[:aes.BlockSize]
-		rand.Read(iv) // Use a random IV
-		mode := cipher.NewCBCEncrypter(block, iv)
-		mode.CryptBlocks(ciphertext[aes.BlockSize:], plaintext)
-
-		return ciphertext
+		return simpleCbcEncrypt(key, plaintext)
 	}
 
-	ciphertext := make([]byte, len(plaintext))
-	for i := 0; i < len(plaintext); i += aes.BlockSize {
-		block.Encrypt(ciphertext[i:i+aes.BlockSize], plaintext[i:i+aes.BlockSize])
-	}
-
-	return ciphertext
+	return ecbEncrypt(key, plaintext)
 }
 
 func detectEcb(cipher []byte) bool {
@@ -199,6 +214,57 @@ func task3() string {
 	return strconv.Itoa(ecbCount) + " / 1000"
 }
 
+// Byte-at-a-time ECB decryption
+func task4() {
+	// Create a random 16-byte key
+	key := make([]byte, 16)
+	rand.Read(key)
+
+	prefix := make([]byte, 16)
+	rand.Read(prefix)
+
+	toAppend := "Um9sbGluJyBpbiBteSA1LjAKV2l0aCBteSByYWctdG9wIGRvd24gc28gbXkgaGFpciBjYW4gYmxvdwpUaGUgZ2lybGllcyBvbiBzdGFuZGJ5IHdhdmluZyBqdXN0IHRvIHNheSBoaQpEaWQgeW91IHN0b3A/IE5vLCBJIGp1c3QgZHJvdmUgYnkK"
+	str, _ := base64.StdEncoding.DecodeString(toAppend)
+
+	/* for i := 0; i < 33; i++ {
+		interstitial := make([]byte, i)
+		for j := range interstitial {
+			interstitial[j] = byte('A')
+		}
+
+		// Append the chosen plaintext
+		plaintext := append(prefix, interstitial...)
+		plaintext = append(plaintext, str...)
+
+		// Create a random 16-byte key
+		key := make([]byte, 16)
+		rand.Read(key)
+
+		cipher := ecbEncrypt(key, plaintext)
+
+		if detectEcb(cipher) {
+			println("blockLength", i)
+		}
+	} */
+
+	known := make([]byte, 15)
+	for i := range known {
+		known[i] = byte('A')
+	}
+
+	plaintext := append(known, str...)
+	cipher := ecbEncrypt(key, plaintext)
+
+	fmt.Println(cipher)
+
+	/*for j := 0; j < 255; j++ {
+		known[15] = j
+
+		plaintext := append(known, str...)
+
+	}*/
+}
+
 // Go runs all sets in the challenge
 func Go() {
 	// Challenge 1
@@ -210,9 +276,9 @@ func Go() {
 
 	// Challenge 3
 	println("3: ECB vs CBC detections => ", task3())
-	//println("3: ", task3("1b37373331363f78151b7f2b783431333d78397828372d363c78373e783a393b3736"))
 
 	// Challenge 4
+	task4()
 	//println("4: ", task4("data/4.txt"))
 
 	// Challenge 5
