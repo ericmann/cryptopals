@@ -1,16 +1,23 @@
 package set2
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/ioutil"
 	"math/rand"
+	"net/url"
 	"os"
 	"strconv"
 )
+
+func bin2hex(bytes []byte) string {
+	return hex.EncodeToString(bytes)
+}
 
 func check(err error) {
 	if err != nil {
@@ -113,6 +120,27 @@ func ecbEncrypt(key []byte, plaintext []byte) []byte {
 	return ciphertext
 }
 
+func ecbOracle(key []byte, plaintext []byte) []byte {
+	toAppend := "Um9sbGluJyBpbiBteSA1LjAKV2l0aCBteSByYWctdG9wIGRvd24gc28gbXkgaGFpciBjYW4gYmxvdwpUaGUgZ2lybGllcyBvbiBzdGFuZGJ5IHdhdmluZyBqdXN0IHRvIHNheSBoaQpEaWQgeW91IHN0b3A/IE5vLCBJIGp1c3QgZHJvdmUgYnkK"
+	str, _ := base64.StdEncoding.DecodeString(toAppend)
+
+	plaintext = append(plaintext, str...)
+
+	toPad := aes.BlockSize - (len(plaintext) % aes.BlockSize)
+	plaintext = pad(plaintext, len(plaintext)+toPad)
+
+	// Set up aes
+	block, err := aes.NewCipher(key)
+	check(err)
+
+	ciphertext := make([]byte, len(plaintext))
+	for i := 0; i < len(plaintext); i += aes.BlockSize {
+		block.Encrypt(ciphertext[i:i+aes.BlockSize], plaintext[i:i+aes.BlockSize])
+	}
+
+	return ciphertext
+}
+
 func encryptionOracle(plaintext []byte) []byte {
 	// Create a random 16-byte key
 	key := make([]byte, 16)
@@ -135,6 +163,15 @@ func encryptionOracle(plaintext []byte) []byte {
 	return ecbEncrypt(key, plaintext)
 }
 
+func makeA(size int) []byte {
+	output := make([]byte, size)
+	for i := range output {
+		output[i] = byte('A')
+	}
+
+	return output
+}
+
 func detectEcb(cipher []byte) bool {
 	size := len(cipher)
 
@@ -153,6 +190,51 @@ func detectEcb(cipher []byte) bool {
 	}
 
 	return false
+}
+
+func profileFor(email string) string {
+	v := url.Values{}
+
+	v.Set("email", email)
+	// v.Set("uid", strconv.Itoa(10))
+	// v.Set("role", "user")
+	// Go natively orders query params alphabetically, we need role to be last!
+
+	return v.Encode() + "&uid=10&role=user"
+}
+
+func encProfile(email string, key []byte) []byte {
+	profile := profileFor(email)
+
+	return ecbEncrypt(key, []byte(profile))
+}
+
+func decProfile(encrypted []byte, key []byte) []byte {
+	block, err := aes.NewCipher(key)
+	check(err)
+
+	out := make([]byte, len(encrypted))
+
+	for i := 0; i < len(out); i += aes.BlockSize {
+		block.Decrypt(out[i:i+aes.BlockSize], encrypted[i:i+aes.BlockSize])
+	}
+
+	// Remove padding
+	last := int(out[len(out)-1])
+	if last < block.BlockSize() {
+		canStrip := true
+		for i := len(out) - last; i < len(out); i++ {
+			if out[i] != byte(last) {
+				canStrip = false
+				break
+			}
+		}
+		if canStrip {
+			out = out[:len(out)-last]
+		}
+	}
+
+	return out
 }
 
 /*************************/
@@ -220,49 +302,86 @@ func task4() {
 	key := make([]byte, 16)
 	rand.Read(key)
 
-	prefix := make([]byte, 16)
-	rand.Read(prefix)
+	// Figure out how many blocks are added by the unknown string
+	blocksAdded := len(ecbOracle(key, make([]byte, 0))) / aes.BlockSize
 
-	toAppend := "Um9sbGluJyBpbiBteSA1LjAKV2l0aCBteSByYWctdG9wIGRvd24gc28gbXkgaGFpciBjYW4gYmxvdwpUaGUgZ2lybGllcyBvbiBzdGFuZGJ5IHdhdmluZyBqdXN0IHRvIHNheSBoaQpEaWQgeW91IHN0b3A/IE5vLCBJIGp1c3QgZHJvdmUgYnkK"
-	str, _ := base64.StdEncoding.DecodeString(toAppend)
+	// Build up a holder variable for the decoded text
+	text := make([]byte, aes.BlockSize*blocksAdded)
 
-	/* for i := 0; i < 33; i++ {
-		interstitial := make([]byte, i)
-		for j := range interstitial {
-			interstitial[j] = byte('A')
+	// Iterate over blocks
+	for block := 0; block < blocksAdded; block++ {
+
+		// Iterate over characters in the block
+		for i := 0; i < aes.BlockSize; i++ {
+			// Capture first block when we prefix with AAAAs of blockSize - 1
+			prefix := makeA(aes.BlockSize - 1 - i)
+			short := ecbOracle(key, prefix)
+			short = short[aes.BlockSize*block : aes.BlockSize*(block+1)]
+
+			// Find the array that matches the one-byte short block
+			dummy := makeA(aes.BlockSize)
+			if i > 0 && block == 0 {
+				start := aes.BlockSize - 1 - i
+				end := aes.BlockSize - 1
+				tStart := aes.BlockSize * block
+				tEnd := i + aes.BlockSize*block
+				copy(dummy[start:end], text[tStart:tEnd])
+			}
+			if block > 0 {
+				start := 0
+				end := aes.BlockSize - 1
+				tStart := aes.BlockSize*(block-1) + i + 1
+				tEnd := aes.BlockSize*block + i
+				copy(dummy[start:end], text[tStart:tEnd])
+			}
+
+			// Iterate over the last byte in the block
+			for b := 0; b < 256; b++ {
+				dummy[aes.BlockSize-1] = byte(b)
+				out := ecbOracle(key, dummy)
+				if bytes.Equal(out[:aes.BlockSize], short) {
+					text[aes.BlockSize*block+i] = byte(b)
+					break
+				}
+			}
 		}
-
-		// Append the chosen plaintext
-		plaintext := append(prefix, interstitial...)
-		plaintext = append(plaintext, str...)
-
-		// Create a random 16-byte key
-		key := make([]byte, 16)
-		rand.Read(key)
-
-		cipher := ecbEncrypt(key, plaintext)
-
-		if detectEcb(cipher) {
-			println("blockLength", i)
-		}
-	} */
-
-	known := make([]byte, 15)
-	for i := range known {
-		known[i] = byte('A')
 	}
 
-	plaintext := append(known, str...)
-	cipher := ecbEncrypt(key, plaintext)
+	fmt.Println(string(text))
+}
 
-	fmt.Println(cipher)
+// Copy-and paste ECB
+func task5(email string, role string) {
+	key := make([]byte, 16)
+	rand.Read(key)
 
-	/*for j := 0; j < 255; j++ {
-		known[15] = j
+	// Create a nefarious user
+	bogus := "aa@m.comadmin           "
+	bogusEnc := encProfile(bogus, key)
 
-		plaintext := append(known, str...)
+	// Capture the second block ("admin" + padding) only
+	admin := bogusEnc[16:32]
+	fmt.Println(string(decProfile(admin, key)))
 
-	}*/
+	// Padd the specified email so the role is in a block of its own
+	toPad := 32 - (2 + len("email=") + len(email) + len("&uid=10&role="))
+	for i := 0; i < toPad; i++ {
+		email += " "
+	}
+
+	// Encrypt the _real_ profile
+	enc := encProfile(email, key)
+
+	// Show the real profile
+	dec := decProfile(enc, key)
+	fmt.Println(url.ParseQuery(string(dec)))
+
+	// Create a _bogus_ admin profile
+	junk := append(enc[:32], admin...)
+
+	// Show the broken profile
+	junkDec := decProfile(junk, key)
+	fmt.Println(url.ParseQuery(string(junkDec)))
 }
 
 // Go runs all sets in the challenge
@@ -272,17 +391,17 @@ func Go() {
 
 	// Challenge 2
 	println("2: ", string(task2("data/10.txt", "YELLOW SUBMARINE", []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})))
-	//println("2: ", task2("1c0111001f010100061a024b53535009181c", "686974207468652062756c6c277320657965"))
 
 	// Challenge 3
 	println("3: ECB vs CBC detections => ", task3())
 
 	// Challenge 4
+	println("4:")
 	task4()
-	//println("4: ", task4("data/4.txt"))
 
 	// Challenge 5
-	//println("5: ", task5("Burning 'em, if you ain't quick and nimble\nI go crazy when I hear a cymbal", "ICE"))
+	fmt.Println(profileFor("foo@bar.com"))
+	task5("foo@bar.com", "admin")
 
 	// Challenge 6
 	//println("6: ", task6("data/6.txt", 2, 40))
